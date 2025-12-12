@@ -357,37 +357,13 @@ static int v4l2_buffer_swframe_to_buf(const AVFrame *frame, V4L2Buffer *out)
 {
     int i, ret;
     struct v4l2_format fmt = out->context->format;
-    int pixel_format = V4L2_TYPE_IS_MULTIPLANAR(fmt.type) ?
-                       fmt.fmt.pix_mp.pixelformat : fmt.fmt.pix.pixelformat;
     int height       = V4L2_TYPE_IS_MULTIPLANAR(fmt.type) ?
                        fmt.fmt.pix_mp.height : fmt.fmt.pix.height;
-    int is_planar_format = 0;
 
-    switch (pixel_format) {
-    case V4L2_PIX_FMT_YUV420M:
-    case V4L2_PIX_FMT_YVU420M:
-#ifdef V4L2_PIX_FMT_YUV422M
-    case V4L2_PIX_FMT_YUV422M:
-#endif
-#ifdef V4L2_PIX_FMT_YVU422M
-    case V4L2_PIX_FMT_YVU422M:
-#endif
-#ifdef V4L2_PIX_FMT_YUV444M
-    case V4L2_PIX_FMT_YUV444M:
-#endif
-#ifdef V4L2_PIX_FMT_YVU444M
-    case V4L2_PIX_FMT_YVU444M:
-#endif
-    case V4L2_PIX_FMT_NV12M:
-    case V4L2_PIX_FMT_NV21M:
-    case V4L2_PIX_FMT_NV12MT_16X16:
-    case V4L2_PIX_FMT_NV12MT:
-    case V4L2_PIX_FMT_NV16M:
-    case V4L2_PIX_FMT_NV61M:
-        is_planar_format = 1;
-    }
-
-    if (!is_planar_format) {
+    /* Use num_planes from buffer initialization to determine if format is
+     * multiplanar. Some drivers (e.g., CIX Sky1 VPU) report non-M fourccs
+     * like YU12 with multiple planes in mplane mode. */
+    if (out->num_planes == 1) {
         const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(frame->format);
         int planes_nb = 0;
         int offset = 0;
@@ -409,10 +385,20 @@ static int v4l2_buffer_swframe_to_buf(const AVFrame *frame, V4L2Buffer *out)
         return 0;
     }
 
-    for (i = 0; i < out->num_planes; i++) {
-        ret = v4l2_bufref_to_buf(out, i, frame->buf[i]->data, frame->buf[i]->size, 0);
-        if (ret)
-            return ret;
+    /* Multiplanar format: copy each AVFrame plane to corresponding V4L2 plane */
+    {
+        const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(frame->format);
+        for (i = 0; i < out->num_planes; i++) {
+            int h = height;
+            int size;
+            if (i == 1 || i == 2) {
+                h = AV_CEIL_RSHIFT(h, desc->log2_chroma_h);
+            }
+            size = frame->linesize[i] * h;
+            ret = v4l2_bufref_to_buf(out, i, frame->data[i], size, 0);
+            if (ret)
+                return ret;
+        }
     }
 
     return 0;

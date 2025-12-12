@@ -845,6 +845,7 @@ extern const FFCodec ff_libaom_av1_decoder;
 /* hwaccel hooks only, so prefer external decoders */
 extern const FFCodec ff_av1_decoder;
 extern const FFCodec ff_av1_cuvid_decoder;
+extern const FFCodec ff_av1_v4l2m2m_decoder;
 extern const FFCodec ff_av1_mediacodec_decoder;
 extern const FFCodec ff_av1_mediacodec_encoder;
 extern const FFCodec ff_av1_nvenc_encoder;
@@ -916,6 +917,7 @@ extern const FFCodec ff_vp9_mediacodec_encoder;
 extern const FFCodec ff_vp9_qsv_decoder;
 extern const FFCodec ff_vp9_vaapi_encoder;
 extern const FFCodec ff_vp9_qsv_encoder;
+extern const FFCodec ff_vp9_v4l2m2m_encoder;
 extern const FFCodec ff_vvc_qsv_decoder;
 
 // null codecs
@@ -1009,8 +1011,9 @@ static const AVCodec *find_codec(enum AVCodecID id, int (*x)(const AVCodec *))
         if (!x(p))
             continue;
         if (p->id == id) {
-            if (p->capabilities & AV_CODEC_CAP_EXPERIMENTAL && !experimental) {
-                experimental = p;
+            if (p->capabilities & AV_CODEC_CAP_EXPERIMENTAL) {
+                if (!experimental)
+                    experimental = p;
             } else
                 return p;
         }

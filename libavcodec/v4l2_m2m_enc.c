@@ -444,3 +444,4 @@ M2MENC(h263, "H.263", options,       AV_CODEC_ID_H263);
 M2MENC(h264, "H.264", options,       AV_CODEC_ID_H264);
 M2MENC(hevc, "HEVC",  options,       AV_CODEC_ID_HEVC);
 M2MENC(vp8,  "VP8",   options,       AV_CODEC_ID_VP8);
+M2MENC(vp9,  "VP9",   options,       AV_CODEC_ID_VP9);

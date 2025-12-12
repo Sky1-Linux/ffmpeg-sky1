@@ -18,6 +18,7 @@
 
 #include <float.h>
 #include <stdint.h>
+#include <unistd.h>
 
 #include "ffmpeg.h"
 #include "ffmpeg_sched.h"
@@ -1153,6 +1154,78 @@ static int choose_decoder(const OptionsContext *o, void *logctx,
                                c->name, av_hwdevice_get_type_name(hwaccel_device_type));
                         *pcodec = c;
                         return 0;
+                    }
+                }
+            }
+        }
+
+        /* CIX Sky1 VPU: Auto-select V4L2 M2M hardware decoders for supported codecs.
+         * V4L2 M2M decoders don't use the hwaccel API - they're standalone decoder
+         * implementations. Enable auto-selection unless:
+         * - User specified -hwaccel with a specific API (GENERIC = vaapi/vdpau/etc.)
+         * - User explicitly disabled with -hwaccel none
+         * - Environment variable AV_HWACCEL_DISABLE is set (for test determinism)
+         * Note: hwaccel_id==HWACCEL_NONE when no -hwaccel given OR when -hwaccel none,
+         * so we check the raw option string to distinguish these cases. */
+        if (!getenv("AV_HWACCEL_DISABLE")) {
+            const char *hwaccel_opt = NULL;
+            opt_match_per_stream_str(logctx, &o->hwaccels, s, st, &hwaccel_opt);
+
+            if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
+                hwaccel_id != HWACCEL_GENERIC &&
+                !(hwaccel_opt && !strcmp(hwaccel_opt, "none"))) {
+                const char *v4l2_decoder = NULL;
+
+                /* Whitelist of codecs with known-working V4L2 M2M decoders */
+                switch (st->codecpar->codec_id) {
+                case AV_CODEC_ID_H264:       v4l2_decoder = "h264_v4l2m2m"; break;
+                case AV_CODEC_ID_HEVC:       v4l2_decoder = "hevc_v4l2m2m"; break;
+                case AV_CODEC_ID_VP8:        v4l2_decoder = "vp8_v4l2m2m"; break;
+                case AV_CODEC_ID_VP9:        v4l2_decoder = "vp9_v4l2m2m"; break;
+                case AV_CODEC_ID_AV1:        v4l2_decoder = "av1_v4l2m2m"; break;
+                case AV_CODEC_ID_MPEG2VIDEO: v4l2_decoder = "mpeg2_v4l2m2m"; break;
+                case AV_CODEC_ID_MPEG4:      v4l2_decoder = "mpeg4_v4l2m2m"; break;
+                case AV_CODEC_ID_H263:
+                    /* H.263: Probe bitstream to detect H.263+ (PLUSPTYPE).
+                     * CIX Sky1 VPU only supports baseline H.263, not H.263+ extensions.
+                     * H.263 PSC is 22 bits (0x000080), then 8-bit temporal ref, then format (3 bits).
+                     * Format = 7 means H.263+ (PLUSPTYPE). Format 1-5 = baseline H.263. */
+                    {
+                        AVPacket *pkt = av_packet_alloc();
+                        if (pkt && av_read_frame(s, pkt) >= 0) {
+                            if (pkt->stream_index == st->index && pkt->size >= 5) {
+                                /* Byte 4 bits 5-7 contain the format field (after PSC + TR) */
+                                int format = (pkt->data[4] >> 2) & 0x07;
+                                if (format >= 1 && format <= 5) {
+                                    /* Baseline H.263 - safe for hardware */
+                                    v4l2_decoder = "h263_v4l2m2m";
+                                    av_log(logctx, AV_LOG_VERBOSE,
+                                           "H.263 baseline detected (format=%d), using hardware\n", format);
+                                } else {
+                                    av_log(logctx, AV_LOG_VERBOSE,
+                                           "H.263+ detected (format=%d), using software\n", format);
+                                }
+                            }
+                            /* Seek back to start so packet isn't lost */
+                            avformat_seek_file(s, -1, INT64_MIN, 0, 0, 0);
+                        }
+                        av_packet_free(&pkt);
+                    }
+                    break;
+                default: break;
+                }
+
+                if (v4l2_decoder) {
+                    /* Check if V4L2 M2M device exists before selecting hw decoder */
+                    if (access("/dev/video0", F_OK) == 0) {
+                        const AVCodec *hw_codec = avcodec_find_decoder_by_name(v4l2_decoder);
+                        if (hw_codec) {
+                            av_log(logctx, AV_LOG_VERBOSE,
+                                   "Auto-selecting V4L2 M2M decoder '%s' for codec %s\n",
+                                   v4l2_decoder, avcodec_get_name(st->codecpar->codec_id));
+                            *pcodec = hw_codec;
+                            return 0;
+                        }
                     }
                 }
             }

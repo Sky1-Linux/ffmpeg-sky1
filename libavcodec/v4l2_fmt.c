@@ -107,6 +107,14 @@ static const struct fmt_conversion {
 #ifdef V4L2_PIX_FMT_VC1_ANNEX_G
     { AV_FMT(NONE),        AV_CODEC(VC1),         V4L2_FMT(VC1_ANNEX_G) },
 #endif
+#ifdef V4L2_PIX_FMT_AV1_FRAME
+    { AV_FMT(NONE),        AV_CODEC(AV1),         V4L2_FMT(AV1_FRAME) },
+#endif
+    /* CIX Sky1 VPU uses custom AV01 fourcc for AV1 decode */
+#ifndef V4L2_PIX_FMT_AV01
+#define V4L2_PIX_FMT_AV01 v4l2_fourcc('A', 'V', '0', '1')
+#endif
+    { AV_FMT(NONE),        AV_CODEC(AV1),         V4L2_PIX_FMT_AV01 },
 };
 
 uint32_t ff_v4l2_format_avcodec_to_v4l2(enum AVCodecID avcodec)
@@ -138,4 +146,15 @@ enum AVPixelFormat ff_v4l2_format_v4l2_to_avfmt(uint32_t v4l2_fmt, enum AVCodecI
             return fmt_map[i].avfmt;
     }
     return AV_PIX_FMT_NONE;
+}
+
+int ff_v4l2_format_v4l2_matches_codec(uint32_t v4l2_fmt, enum AVCodecID avcodec)
+{
+    int i;
+    for (i = 0; i < FF_ARRAY_ELEMS(fmt_map); i++) {
+        if (fmt_map[i].avcodec  == avcodec &&
+            fmt_map[i].v4l2_fmt == v4l2_fmt)
+            return 1;
+    }
+    return 0;
 }
