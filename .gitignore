@@ -26,6 +26,11 @@ libavfilter/filter_list.c
 libavdevice/indev_list.c
 libavdevice/outdev_list.c
 
+# Source tarballs and extracted dirs
+*.orig.tar.*
+*.debian.tar.*
+ffmpeg-[0-9]*/
+
 # Debian build
 debian/.debhelper/
 debian/tmp/
