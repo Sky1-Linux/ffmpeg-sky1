@@ -25,6 +25,7 @@ ALLFFLIBS =            \
     avfilter           \
     avformat           \
     avutil             \
+    postproc           \
     swscale            \
     swresample         \
 
@@ -33,6 +34,7 @@ FFLIBS-$(CONFIG_AVDEVICE)   += avdevice
 FFLIBS-$(CONFIG_AVFILTER)   += avfilter
 FFLIBS-$(CONFIG_AVFORMAT)   += avformat
 FFLIBS-$(CONFIG_AVCODEC)    += avcodec
+FFLIBS-$(CONFIG_POSTPROC)   += postproc
 FFLIBS-$(CONFIG_SWRESAMPLE) += swresample
 FFLIBS-$(CONFIG_SWSCALE)    += swscale
 
