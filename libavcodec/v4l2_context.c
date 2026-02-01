@@ -526,15 +526,11 @@ static int v4l2_get_raw_format(V4L2Context* ctx, enum AVPixelFormat *p)
 static int v4l2_get_coded_format(V4L2Context* ctx, uint32_t *p)
 {
     struct v4l2_fmtdesc fdesc;
-    uint32_t v4l2_fmt;
     int ret;
 
-    /* translate to a valid v4l2 format */
-    v4l2_fmt = ff_v4l2_format_avcodec_to_v4l2(ctx->av_codec_id);
-    if (!v4l2_fmt)
-        return AVERROR(EINVAL);
-
-    /* check if the driver supports this format */
+    /* Enumerate all formats the driver supports and find one that matches
+     * our codec. This handles cases where multiple V4L2 fourccs map to the
+     * same codec (e.g., AV1F and AV01 both map to AV1). */
     memset(&fdesc, 0, sizeof(fdesc));
     fdesc.type = ctx->type;
 
@@ -543,15 +539,14 @@ static int v4l2_get_coded_format(V4L2Context* ctx, uint32_t *p)
         if (ret)
             return AVERROR(EINVAL);
 
-        if (fdesc.pixelformat == v4l2_fmt)
-            break;
+        /* Check if this driver format matches our codec */
+        if (ff_v4l2_format_v4l2_matches_codec(fdesc.pixelformat, ctx->av_codec_id)) {
+            *p = fdesc.pixelformat;
+            return 0;
+        }
 
         fdesc.index++;
     }
-
-    *p = v4l2_fmt;
-
-    return 0;
 }
 
  /*****************************************************************************
