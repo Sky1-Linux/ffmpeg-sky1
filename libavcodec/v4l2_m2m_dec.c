@@ -23,6 +23,10 @@
 
 #include <linux/videodev2.h>
 #include <sys/ioctl.h>
+
+#include "config.h"
+#include "hwconfig.h"
+
 #include "libavutil/pixfmt.h"
 #include "libavutil/pixdesc.h"
 #include "libavutil/opt.h"
@@ -33,6 +37,15 @@
 #include "v4l2_context.h"
 #include "v4l2_m2m.h"
 #include "v4l2_fmt.h"
+
+#if CONFIG_LIBDRM
+#include "libavutil/hwcontext.h"
+#include "libavutil/pixfmt.h"
+static const AVCodecHWConfigInternal *const v4l2m2m_hw_configs[] = {
+    HW_CONFIG_INTERNAL(DRM_PRIME),
+    NULL
+};
+#endif
 
 static int v4l2_try_start(AVCodecContext *avctx)
 {
@@ -63,8 +76,34 @@ static int v4l2_try_start(AVCodecContext *avctx)
     }
 
     /* 2.1 update the AVCodecContext */
-    avctx->pix_fmt = ff_v4l2_format_v4l2_to_avfmt(capture->format.fmt.pix_mp.pixelformat, AV_CODEC_ID_RAWVIDEO);
-    capture->av_pix_fmt = avctx->pix_fmt;
+    {
+        enum AVPixelFormat sw_pix_fmt;
+        enum AVPixelFormat chosen;
+        sw_pix_fmt = ff_v4l2_format_v4l2_to_avfmt(capture->format.fmt.pix_mp.pixelformat, AV_CODEC_ID_RAWVIDEO);
+
+        /*
+         * Kodi's DRMPRIME pipeline expects AV_PIX_FMT_DRM_PRIME. The V4L2 M2M
+         * decoder can provide it by exporting CAPTURE buffers via VIDIOC_EXPBUF.
+         * If the caller requests DRM_PRIME in get_format(), enable that mode.
+         */
+        if (avctx->get_format) {
+            const enum AVPixelFormat pix_fmts[] = { AV_PIX_FMT_DRM_PRIME, sw_pix_fmt, AV_PIX_FMT_NONE };
+            chosen = avctx->get_format(avctx, pix_fmts);
+        } else {
+            chosen = sw_pix_fmt;
+        }
+
+        if (chosen == AV_PIX_FMT_DRM_PRIME) {
+            s->output_drmprime = 1;
+            avctx->pix_fmt = AV_PIX_FMT_DRM_PRIME;
+            /* keep the real capture pixel format for buffer bookkeeping */
+            capture->av_pix_fmt = sw_pix_fmt;
+        } else {
+            s->output_drmprime = 0;
+            avctx->pix_fmt = chosen;
+            capture->av_pix_fmt = chosen;
+        }
+    }
 
     /* 3. set the crop parameters */
     selection.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -220,6 +259,27 @@ static av_cold int v4l2_decode_close(AVCodecContext *avctx)
     return ff_v4l2_m2m_codec_end(avctx->priv_data);
 }
 
+static void v4l2_decode_flush(AVCodecContext *avctx)
+{
+    V4L2m2mPriv *priv = avctx->priv_data;
+    V4L2m2mContext *s = priv->context;
+
+    // 1. Reset Internal State
+    // Crucial: If we don't reset 'draining', the decoder will refuse 
+    // new packets after the seek, causing the image to freeze.
+    s->draining = 0;
+
+    // Reset 'done' flags so dequeue doesn't return EOF immediately.
+    s->output.done = 0;
+    s->capture.done = 0;
+
+    av_packet_unref(&s->buf_pkt);
+
+    // 2. Flush the Contexts
+    ff_v4l2_context_flush(&s->output);
+    ff_v4l2_context_flush(&s->capture);
+}
+
 #define OFFSET(x) offsetof(V4L2m2mPriv, x)
 #define FLAGS AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_DECODING_PARAM
 
@@ -228,6 +288,23 @@ static const AVOption options[] = {
     { "num_capture_buffers", "Number of buffers in the capture context",
         OFFSET(num_capture_buffers), AV_OPT_TYPE_INT, {.i64 = 20}, 2, INT_MAX, FLAGS },
     { NULL},
+};
+
+/*
+ * Advertise DRM_PRIME as a possible output format. Kodi's DRMPRIME video path
+ * queries the decoder's supported pixel formats early (before packets are
+ * fed), so this needs to be visible at codec-registration time.
+ */
+static const enum AVPixelFormat v4l2m2mdec_pix_fmts[] = {
+#if CONFIG_LIBDRM
+    AV_PIX_FMT_DRM_PRIME,
+#endif
+    AV_PIX_FMT_NV12,
+    AV_PIX_FMT_NV21,
+    AV_PIX_FMT_P010LE,
+    AV_PIX_FMT_YUV420P,
+    AV_PIX_FMT_YUV420P10LE,
+    AV_PIX_FMT_NONE,
 };
 
 #define M2MDEC_CLASS(NAME) \
@@ -240,20 +317,22 @@ static const AVOption options[] = {
 
 #define M2MDEC(NAME, LONGNAME, CODEC, bsf_name) \
     M2MDEC_CLASS(NAME) \
-    const FFCodec ff_ ## NAME ## _v4l2m2m_decoder = { \
-        .p.name         = #NAME "_v4l2m2m" , \
+    const FFCodec ff_##NAME##_v4l2m2m_decoder = { \
+        .p.name         = #NAME "_v4l2m2m", \
         CODEC_LONG_NAME("V4L2 mem2mem " LONGNAME " decoder wrapper"), \
         .p.type         = AVMEDIA_TYPE_VIDEO, \
-        .p.id           = CODEC , \
+        .p.id           = CODEC, \
+	.hw_configs	= v4l2m2m_hw_configs, \
+        .p.pix_fmts     = v4l2m2mdec_pix_fmts, \
         .priv_data_size = sizeof(V4L2m2mPriv), \
-        .p.priv_class   = &v4l2_m2m_ ## NAME ## _dec_class, \
+        .p.priv_class   = &v4l2_m2m_##NAME##_dec_class, \
         .init           = v4l2_decode_init, \
         FF_CODEC_RECEIVE_FRAME_CB(v4l2_receive_frame), \
         .close          = v4l2_decode_close, \
+        .flush          = v4l2_decode_flush, \
         .bsfs           = bsf_name, \
         .p.capabilities = AV_CODEC_CAP_HARDWARE | AV_CODEC_CAP_DELAY | AV_CODEC_CAP_AVOID_PROBING, \
-        .caps_internal  = FF_CODEC_CAP_NOT_INIT_THREADSAFE | \
-                          FF_CODEC_CAP_INIT_CLEANUP, \
+        .caps_internal  = FF_CODEC_CAP_NOT_INIT_THREADSAFE | FF_CODEC_CAP_INIT_CLEANUP, \
         .p.wrapper_name = "v4l2m2m", \
     }
 

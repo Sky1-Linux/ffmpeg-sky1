@@ -455,6 +455,10 @@ static int v4l2_release_buffers(V4L2Context* ctx)
 
         for (j = 0; j < buffer->num_planes; j++) {
             struct V4L2Plane_info *p = &buffer->plane_info[j];
+            if (buffer->dmabuf_fd[j] >= 0) {
+                close(buffer->dmabuf_fd[j]);
+                buffer->dmabuf_fd[j] = -1;
+            }
             if (p->mm_addr && p->length)
                 if (munmap(p->mm_addr, p->length) < 0)
                     av_log(logger(ctx), AV_LOG_ERROR, "%s unmap plane (%s))\n", ctx->name, av_err2str(AVERROR(errno)));
@@ -698,11 +702,112 @@ void ff_v4l2_context_release(V4L2Context* ctx)
     if (!ctx->buffers)
         return;
 
+    // Force stream off first. This reclaims all buffers from the driver (dequeues them).
+    // Without this, v4l2_release_buffers (REQBUFS 0) might hang or fail with EBUSY
+    // because the driver still holds the empty buffers we queued during the flush.
+    ff_v4l2_context_set_status(ctx, VIDIOC_STREAMOFF);
+
     ret = v4l2_release_buffers(ctx);
     if (ret)
         av_log(logger(ctx), AV_LOG_WARNING, "V4L2 failed to unmap the %s buffers\n", ctx->name);
 
     av_freep(&ctx->buffers);
+}
+
+void ff_v4l2_context_flush(V4L2Context* ctx)
+{
+    V4L2m2mContext *s = ctx_to_m2mctx(ctx);
+    int ret, i;
+
+    /*
+     * Flush must reset the *decoder/encoder state* while keeping the MMAP
+     * buffer mappings intact.
+     *
+     * Doing a hard REQBUFS(0) here (or closing dmabuf fds / dropping pointers)
+     * is unsafe because higher layers (and other parts of the v4l2_m2m glue)
+     * still reference ctx->buffers. It also tends to trigger driver deadlocks
+     * and "frozen first frame" behaviour after a seek.
+     */
+
+    /* Reset common per-stream state */
+    s->draining      = 0;
+    ctx->done        = 0;
+
+    /*
+     * Stop the codec if supported. On many stateful decoders this is required
+     * to drop reference frames and restart cleanly after a seek.
+     */
+    if (s->avctx && av_codec_is_decoder(s->avctx->codec) && V4L2_TYPE_IS_OUTPUT(ctx->type))
+        (void)v4l2_stop_decode(&s->output);
+    else if (s->avctx && av_codec_is_encoder(s->avctx->codec) && V4L2_TYPE_IS_OUTPUT(ctx->type))
+        (void)v4l2_stop_encode(&s->output);
+
+    /* Stream off both queues to reclaim all buffers from the driver */
+    (void)ff_v4l2_context_set_status(&s->output,  VIDIOC_STREAMOFF);
+    (void)ff_v4l2_context_set_status(&s->capture, VIDIOC_STREAMOFF);
+
+    /* Dequeue everything that's still pending on both queues */
+    while (v4l2_dequeue_v4l2buf(&s->output,  0))
+        ;
+    while (v4l2_dequeue_v4l2buf(&s->capture, 0))
+        ;
+
+    /* Mark all buffers as available and reset bytesused */
+    if (s->output.buffers) {
+        for (i = 0; i < s->output.num_buffers; i++) {
+            V4L2Buffer *b = &s->output.buffers[i];
+            b->status = V4L2BUF_AVAILABLE;
+            if (V4L2_TYPE_IS_MULTIPLANAR(s->output.type)) {
+                int p;
+                for (p = 0; p < b->num_planes; p++)
+                    b->planes[p].bytesused = 0;
+            } else {
+                b->buf.bytesused = 0;
+            }
+        }
+    }
+
+    if (s->capture.buffers) {
+        for (i = 0; i < s->capture.num_buffers; i++) {
+            V4L2Buffer *b = &s->capture.buffers[i];
+            b->status = V4L2BUF_AVAILABLE;
+            if (V4L2_TYPE_IS_MULTIPLANAR(s->capture.type)) {
+                int p;
+                for (p = 0; p < b->num_planes; p++)
+                    b->planes[p].bytesused = 0;
+            } else {
+                b->buf.bytesused = 0;
+            }
+        }
+    }
+
+    /* Re-queue capture buffers so decoding can resume immediately */
+    if (s->capture.buffers) {
+        for (i = 0; i < s->capture.num_buffers; i++) {
+            ret = ff_v4l2_buffer_enqueue(&s->capture.buffers[i]);
+            if (ret < 0) {
+                av_log(logger(ctx), AV_LOG_WARNING,
+                       "Flush: failed to requeue %s buffer %d (%s)\n",
+                       s->capture.name, i, av_err2str(ret));
+                break;
+            }
+        }
+    }
+
+    /* Stream on again (capture first is the usual V4L2 requirement) */
+    ret = ff_v4l2_context_set_status(&s->capture, VIDIOC_STREAMON);
+    if (ret < 0)
+        av_log(logger(ctx), AV_LOG_WARNING, "Flush: %s STREAMON failed (%s)\n",
+               s->capture.name, av_err2str(ret));
+
+    ret = ff_v4l2_context_set_status(&s->output, VIDIOC_STREAMON);
+    if (ret < 0)
+        av_log(logger(ctx), AV_LOG_WARNING, "Flush: %s STREAMON failed (%s)\n",
+               s->output.name, av_err2str(ret));
+
+    /* Restart the decoder if required by the driver */
+    if (s->avctx && av_codec_is_decoder(s->avctx->codec))
+        (void)v4l2_start_decode(&s->output);
 }
 
 int ff_v4l2_context_init(V4L2Context* ctx)

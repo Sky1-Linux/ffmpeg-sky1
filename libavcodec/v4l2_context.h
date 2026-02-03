@@ -141,6 +141,19 @@ void ff_v4l2_context_release(V4L2Context* ctx);
 int ff_v4l2_context_set_status(V4L2Context* ctx, uint32_t cmd);
 
 /**
+ * Flushes a V4L2Context.
+ *
+ * This function stops the stream (VIDIOC_STREAMOFF) and explicitly closes any
+ * cached DMABUF file descriptors. This ensures that stale file descriptors
+ * are invalidated and renewed upon the next stream start, which is critical
+ * for correct behavior after seeking (especially when using DRM Prime).
+ *
+ * @param[in] ctx A pointer to a V4L2Context.
+ * Warning: This causes the driver to drop any frames that are still buffered in the queue.
+ */
+void ff_v4l2_context_flush(V4L2Context* ctx);
+
+/**
  * Dequeues a buffer from a V4L2Context to an AVPacket.
  *
  * The pkt must be non NULL.

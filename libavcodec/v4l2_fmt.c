@@ -107,14 +107,14 @@ static const struct fmt_conversion {
 #ifdef V4L2_PIX_FMT_VC1_ANNEX_G
     { AV_FMT(NONE),        AV_CODEC(VC1),         V4L2_FMT(VC1_ANNEX_G) },
 #endif
-#ifdef V4L2_PIX_FMT_AV1_FRAME
-    { AV_FMT(NONE),        AV_CODEC(AV1),         V4L2_FMT(AV1_FRAME) },
-#endif
     /* CIX Sky1 VPU uses custom AV01 fourcc for AV1 decode */
 #ifndef V4L2_PIX_FMT_AV01
 #define V4L2_PIX_FMT_AV01 v4l2_fourcc('A', 'V', '0', '1')
 #endif
     { AV_FMT(NONE),        AV_CODEC(AV1),         V4L2_PIX_FMT_AV01 },
+#ifdef V4L2_PIX_FMT_AV1_FRAME
+    { AV_FMT(NONE),        AV_CODEC(AV1),         V4L2_FMT(AV1_FRAME) },
+#endif
 };
 
 uint32_t ff_v4l2_format_avcodec_to_v4l2(enum AVCodecID avcodec)

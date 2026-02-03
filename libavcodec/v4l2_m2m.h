@@ -58,6 +58,12 @@ typedef struct V4L2m2mContext {
     int draining;
     AVPacket buf_pkt;
 
+    /*
+     * If set, export CAPTURE buffers as DRM_PRIME (AVDRMFrameDescriptor)
+     * using VIDIOC_EXPBUF.
+     */
+    int output_drmprime;
+
     /* Reference to a frame. Only used during encoding */
     AVFrame *frame;
 

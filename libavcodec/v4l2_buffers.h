@@ -57,6 +57,9 @@ typedef struct V4L2Buffer {
         size_t length;
     } plane_info[VIDEO_MAX_PLANES];
 
+    /* Cached dmabuf fds exported via VIDIOC_EXPBUF (one per V4L2 plane). */
+    int dmabuf_fd[VIDEO_MAX_PLANES];
+
     int num_planes;
 
     /* the v4l2_buffer buf.m.planes pointer uses the planes[] mem */
